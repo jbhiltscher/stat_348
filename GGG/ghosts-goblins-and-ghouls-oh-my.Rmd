@@ -1,0 +1,483 @@
+---
+title: "Ghosts, Goblins and Ghouls. Oh My!"
+author: "Amber Thomas"
+date: "November 9, 2016"
+output: 
+  html_document:
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This is my second-ever Kaggle competition (looking for the [first](https://www.kaggle.com/amberthomas/titanic/predicting-survival-on-the-titanic)?) I'll do my best to walk through my thought-process here and welcome any comments on my work.  Let's get started!
+
+### Loading Necessary Packages
+
+```{r message = FALSE}
+# For data manipulation and tidying
+library(dplyr)
+
+# For data visualizations
+library(ggplot2)
+library(fpc)
+
+# For modeling and predictions
+library(caret)
+library(glmnet)
+library(ranger)
+library(e1071)
+library(clValid)
+```
+
+### Importing Data
+
+The data were downloaded directly from the [Kaggle Website](https://www.kaggle.com/c/ghouls-goblins-and-ghosts-boo/data).  Before binding the training and test sets into a single data file, I added a column called "Dataset" and labelled rows from the training file "train" and rows from the testing file "test".
+
+```{r}
+train <- read.csv('C:/Users/jbhil/Fall 2023/STAT_346/GGG/train.csv', header = TRUE, stringsAsFactors = FALSE)
+train$Dataset <- "train"
+
+test <- read.csv('C:/Users/jbhil/Fall 2023/STAT_346/GGG/test.csv', header = TRUE, stringsAsFactors = FALSE)
+test$Dataset <- "test"
+
+full <- bind_rows(train, test)
+
+```
+
+Ok, time to take a look at the data. 
+
+```{r}
+str(full)
+
+summary(full)
+```
+
+Great! So here's what we know so far:
+
+We have 8 variables currently:
+
+* **ID** : Appears to be the identification number of the monster in question
+* **Bone Length** : Average length of the bones in the creature, normalized to 0 - 1
+* **Rotting Flesh** : Percentage of flesh on the creature that is rotting
+* **Hair Length** : Average length of the hair on the creature, normalized from 0 - 1
+* **Has Soul** : The percentage of a soul present in the creature
+* **Color** : The color of the creature
+* **Type** : The category of the creature (i.e. ghoul, goblin or ghost)
+* **Dataset** : The column I added when importing data indicating whether the observation was part of the original training or test set
+
+It seems like a few of these variables would serve better as factors, rather than character strings, so I'll take care of that. 
+
+```{r}
+factor_variables <- c('id', 'color', 'type', 'Dataset')
+full[factor_variables] <- lapply(full[factor_variables], function(x) as.factor(x))
+```
+
+## Data Exploration
+
+Let's take a look at what we've got here so far. What's the distribution of each variable across each monster?
+
+Let's first temporarily remove the "test" rows. 
+```{r}
+train_2 <- full[full$Dataset == 'train', ]
+```
+
+### Distribution of Continuous Variables by Creature Type{.tabset}
+#### Bone Length
+```{r echo = FALSE}
+ggplot(train_2, 
+       aes(x = type, 
+           y = bone_length, 
+           fill = type)) + 
+  geom_boxplot() +
+  guides(fill = FALSE) + 
+  xlab("Creature") + 
+  ylab("Bone Length") +
+  scale_fill_manual(values = c("#D55E00", "#0072B2", "#009E73"))
+```
+
+#### Rotting Flesh
+```{r echo = FALSE}
+ggplot(train_2, 
+       aes(x = type, 
+           y = rotting_flesh, 
+           fill = type)) + 
+  geom_boxplot() +
+  guides(fill = FALSE) + 
+  xlab("Creature") + 
+  ylab("Percentage of Rotting Flesh") + 
+  scale_fill_manual(values = c("#D55E00", "#0072B2", "#009E73"))
+```
+
+#### Hair Length
+```{r echo = FALSE}
+ggplot(train_2, 
+       aes(x = type, 
+           y = hair_length, 
+           fill = type)) + 
+  geom_boxplot() +
+  guides(fill = FALSE) + 
+  xlab("Creature") + 
+  ylab("Hair Length") + 
+  scale_fill_manual(values = c("#D55E00", "#0072B2", "#009E73"))
+```
+
+#### Soul
+```{r echo = FALSE}
+ggplot(train_2, 
+       aes(x = type, 
+           y = has_soul, 
+           fill = type)) + 
+  geom_boxplot() +
+  guides(fill = FALSE) + 
+  xlab("Creature") + 
+  ylab("Percentage of Soul Present") + 
+  scale_fill_manual(values = c("#D55E00", "#0072B2", "#009E73"))
+```
+
+### Distribution of Color by Creature Type{.tabset}
+#### Ghost
+```{r echo = FALSE}
+ghost_color <- train_2 %>%
+                  filter(type == 'Ghost') %>%
+                  group_by(color) %>%
+                  summarise(count = n())
+ggplot(ghost_color,
+       aes(x = color,
+           y = count,
+           fill = color)) +
+  geom_bar(stat = "identity") + 
+  xlab("Color") + 
+  ylab("Number of Observations") +
+  scale_fill_manual(values = c("Black", "#D55E00", "#0072B2", "#F0E442", "#009E73", "#999999")) + 
+  theme(panel.grid.minor = element_blank()) + 
+  ylim(0, 50) + 
+  guides(fill = FALSE)
+```
+
+#### Ghoul
+```{r echo = FALSE}
+ghoul_color <- train_2 %>%
+                  filter(type == 'Ghoul') %>%
+                  group_by(color) %>%
+                  summarise(count = n())
+ggplot(ghoul_color,
+       aes(x = color,
+           y = count,
+           fill = color)) +
+  geom_bar(stat = "identity") + 
+  xlab("Color") + 
+  ylab("Number of Observations") +
+  scale_fill_manual(values = c("Black", "#D55E00", "#0072B2", "#F0E442", "#009E73", "#999999")) + 
+  theme(panel.grid.minor = element_blank()) + 
+  ylim(0, 50) + 
+  guides(fill = FALSE)
+```
+
+#### Goblin
+```{r echo = FALSE}
+goblin_color <- train_2 %>%
+                  filter(type == 'Goblin') %>%
+                  group_by(color) %>%
+                  summarise(count = n())
+ggplot(goblin_color,
+       aes(x = color,
+           y = count,
+           fill = color)) +
+  geom_bar(stat = "identity") + 
+  xlab("Color") + 
+  ylab("Number of Observations") +
+  scale_fill_manual(values = c("Black", "#D55E00", "#0072B2", "#F0E442", "#009E73", "#999999")) + 
+  theme(panel.grid.minor = element_blank()) + 
+  ylim(0, 50) + 
+  guides(fill = FALSE)
+```
+
+### Distinguishing Features?
+
+Hmm, looks like ghosts have shorter hair and fewer pieces of soul than ghouls and goblins, but otherwise are pretty close.  Ghouls and goblins are going to be tricky to distinguish.  Color doesn't appear to help a whole lot as there seems to be a pretty even distribution to these multi-colored critters. 
+
+
+## Feature Engineering
+
+Normally here I would try to come up with additional ways to look at these data, but we can't infer the size of the creature since both bone and hair length have been normalized. As of now, I can't think of any features worth engineering from the current data.  
+
+Maybe I'm missing some interesting connection between variables?
+
+```{r}
+pairs(full[,2:5], 
+      col = full$type, 
+      labels = c("Bone Length", "Rotting Flesh", "Hair Length", "Soul"))
+```
+
+
+Nope. But perhaps we can take advantage of a combination of characteristics that do seem to show some promise: most notably "Hair Length" and "Soul". Do we get any better separation among creatures if we combine these variables into one?
+
+```{r}
+full <- full %>%
+          mutate(hair_soul = hair_length * has_soul)
+```
+
+```{r echo = FALSE}
+full_1 <- full %>%
+        filter(!is.na(type))
+
+ggplot(full_1, 
+       aes(x = type, 
+           y = hair_soul, 
+           fill = type)) + 
+  geom_boxplot() +
+  guides(fill = FALSE) + 
+  xlab("Creature") + 
+  ylab("Combination of Hair/Soul") + 
+  scale_fill_manual(values = c("#D55E00", "#0072B2", "#009E73"))
+```
+
+That may have separated Ghosts a little further from the other two... Let's try a few more variable interactions. 
+
+```{r}
+full <- full %>%
+          mutate(bone_flesh = bone_length * rotting_flesh,
+                 bone_hair = bone_length * hair_length,
+                 bone_soul = bone_length * has_soul,
+                 flesh_hair = rotting_flesh * hair_length,
+                 flesh_soul = rotting_flesh * has_soul)
+```
+
+Time to check for ways to tidy up. 
+
+
+## Cleaning Data
+
+Let's take another look at the summary statistics for this dataset. 
+
+```{r}
+summary(full)
+```
+
+The only column that has any missing values is `type` which is to be expected since that's what we need to be predicting.  Everything else seems to look good so far.  Let's try to model these as is. 
+
+## Clustering data
+
+While clustering is generally used for unsupervised machine learning, I want to take a peek at the clusters that could be formed using the data at hand. The potential issue with trying to cluster this data is that we are working with two types of data: continuous and categorical. They break down like this:
+
+Continuous Variables  Categorical Variables
+--------------------  ---------------------
+bone length            id          
+rotting flesh          color
+hair length          
+has soul               
+
+So, sure, there's only two categorical variables.  Because of our small sample size, it's not a good idea to count out these variables completely, but we'll try to create clusters without them just to see how well the clustering models do. 
+
+### Cluster Without Categorical Variables
+
+I'll first try to cluster using the `kmeans` function. 
+
+```{r}
+
+# Set the seed
+set.seed(100)
+
+# Extract creature labels and remove column from dataset
+creature_labels <- full$type
+full2 <- full
+full2$type <- NULL
+
+# Remove categorical variables (id, color, and dataset) from dataset
+full2$id <- NULL
+full2$color <- NULL
+full2$Dataset <- NULL
+
+# Perform k-means clustering with 3 clusters, repeat 30 times
+creature_km_1 <- kmeans(full2, 3, nstart = 30)
+
+
+```
+
+Ok, so now we have clusters, time to see how well they did. Let's look at them graphically first. This was created using the `plotcluster()` function from the `fpc` package.
+
+```{r echo = FALSE}
+plotcluster(full2, creature_km_1$cluster)
+```
+
+Hmm, those clusters don't look very discrete.  Let's look at [Dunn's Index](https://en.wikipedia.org/wiki/Dunn_index) mathematically to see if we're missing something visually.  This calculation comes from the `dunn` function in the `clValid` package.
+
+```{r}
+dunn_ckm_1 <- dunn(clusters = creature_km_1$cluster, Data = full2)
+
+# Print results
+dunn_ckm_1
+```
+
+As Dunn's Index represents a ratio of the smallest distance between clusters to the largest distance between two points in the same cluster (or, the smallest inter-cluster distance to the largest intra-cluster distance), such a low number indicates that our current clusters are not condensed, separate entities. This is not terribly surprising considering we completely disregarded one of our variables.
+
+Let's see how well this clustering method correctly separated the labelled creatures. 
+
+```{r}
+table(creature_km_1$cluster, creature_labels)
+```
+
+It looks like currently, ghosts were separated relatively well, but ghouls and goblins are split between the clusters.  Ok, I'm convinced.  I haven't really gained any new information here, but it's been an interesting exploratory path!
+
+On to supervised modeling!
+
+### Modeling for Creature Identity
+
+Clustering was not particularly helpful in discerning creature identity, so perhaps creating models will work better. 
+
+First things first, I need to split out the test and training data back into separate datasets. 
+
+```{r}
+train_complete <- full[full$Dataset == 'train', ]
+test_complete <- full[full$Dataset == 'test', ]
+```
+
+Because I plan on using the `caret` package for all of my modeling, I'm going to generate a standard `trainControl` so that those tuning parameters remain consistent throughout the various models.
+
+### Creating trainControl
+I will create a system that will perform 20 repeats of a 10-Fold cross-validation of the data. 
+```{r}
+myControl <- trainControl(
+	  method = "cv", 
+	  number = 10,
+	  repeats = 20, 
+	  verboseIter = TRUE
+  )
+```
+
+
+### Random Forest Modeling
+
+Let's start with a random forest model, generated using the `ranger` and `caret` packages. I'm going to include all of the original variables, including any interactions here.
+
+```{r results = 'hide'}
+set.seed(10)
+
+rf_model <- train(
+    type ~ bone_length + rotting_flesh + hair_length + has_soul + color + hair_soul + bone_flesh + bone_hair + 
+        bone_soul + flesh_hair + flesh_soul,
+    tuneLength = 3,
+    data = train_complete, 
+    method = "ranger", 
+    trControl = myControl,
+    importance = 'impurity'
+)
+```
+
+Let's look at the levels of importance of each factor in this model. 
+
+```{r echo = FALSE}
+# Creating a Variable Importance variable
+ vimp <- varImp(rf_model)
+
+# Plotting "vimp"
+ ggplot(vimp, 
+        top = dim(vimp$importance)[1]
+        )
+```
+
+Huh.  Our "hair_soul" variable seems to be the most important to this model and our other interactions rank pretty highly.  I suppose we can hold on to them for now.  Color, on the other hand, hardly plays into this.  Let's try removing it from a second random forest model.  
+
+```{r results = 'hide'}
+set.seed(10)
+
+rf_model_2 <- train(
+    type ~ bone_length + rotting_flesh + hair_length + has_soul + hair_soul + bone_flesh + bone_hair + 
+        bone_soul + flesh_hair + flesh_soul,
+    tuneLength = 3,
+    data = train_complete, 
+    method = "ranger", 
+    trControl = myControl,
+    importance = 'impurity'
+)
+```
+
+
+### GLMnet Modeling
+
+I'm going to follow the random forest model up with a glmnet model, also from the `caret` package.
+
+```{r results = 'hide'}
+set.seed(10)
+
+glm_model <- train(
+    type ~ bone_length + rotting_flesh + hair_length + has_soul + color + hair_soul + bone_flesh + bone_hair + 
+        bone_soul + flesh_hair + flesh_soul, 
+    method = "glmnet",
+    tuneGrid = expand.grid(alpha = 0:1,
+      lambda = seq(0.0001, 1, length = 20)),
+    data = train_complete,
+    trControl = myControl
+)
+```
+
+Once again, we'll try without "color".
+```{r results = 'hide'}
+set.seed(10)
+
+glm_model_2 <- train(
+    type ~ bone_length + rotting_flesh + hair_length + has_soul + hair_soul + bone_flesh + bone_hair + 
+        bone_soul + flesh_hair + flesh_soul, 
+    method = "glmnet",
+    tuneGrid = expand.grid(alpha = 0:1,
+      lambda = seq(0.0001, 1, length = 20)),
+    data = train_complete,
+    trControl = myControl
+)
+```
+
+
+### Comparing model fit
+
+Now that we have two random forest models and two glmnet models, it's time to compare their fit.  
+
+```{r}
+# Create a list of models
+models <- list(rf = rf_model, rf2 = rf_model_2, glmnet = glm_model, glmnet2 = glm_model_2)
+
+# Resample the models
+resampled <- resamples(models)
+
+# Generate a summary
+summary(resampled)
+
+# Plot the differences between model fits
+dotplot(resampled, metric = "Accuracy")
+```
+
+
+## Predicting Creature Identity
+
+Although I generated four models above, the second glmnet model (all interactions but without color) provided the highest accuracy, so I'll use that model to predict survival in the test set. 
+
+```{r}
+# Reorder the data by creature ID number
+test_complete <- test_complete %>%
+                  arrange(id)
+
+# Make predicted survival values
+my_prediction <- predict(glm_model_2, test_complete)
+```
+
+
+### Preparing the prediction for Kaggle
+
+The instructions on Kaggle indicate that they are expecting a csv file with 2 columns: ID and Creature Type.  I need to make sure that my data are arranged properly. 
+
+```{r}
+# Create a data frame with two columns
+my_solution_GGG_03 <- data.frame(id = test_complete$id, Type = my_prediction)
+
+# Write the solution to a csv file 
+write.csv(my_solution_GGG_03, file = "my_solution_GGG_03.csv", row.names = FALSE)
+```
+
+### Testing with Kaggle
+
+Looks like that submission scored 0.74669! Not bad!!
+
+*I'd love to hear any feedback you may have on this process. Thanks in advance!*
